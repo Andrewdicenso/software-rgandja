@@ -1,6 +1,8 @@
 import streamlit as st
 import os
 import sys
+import json
+import pandas as pd
 
 # Aggiungiamo la cartella src al path per importare i moduli interni se necessario
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
@@ -23,24 +25,22 @@ db_url = st.secrets.get("url", st.secrets.get("postgres", {}).get("url"))
 def check_password():
     """Restituisce True se l'utente ha inserito la password corretta."""
 
-    # Recuperiamo le credenziali dai Secrets di Streamlit o usiamo valori sicuri di default
     try:
         app_user = st.secrets["APP_USER"]
         app_password = st.secrets["APP_PASSWORD"]
     except Exception:
         app_user = "admin"
-        app_password = "RgandjaSecurePassword2026!"  # Puoi cambiarla nei secrets di Streamlit
+        app_password = "RgandjaSecurePassword2026!"
 
     def password_entered():
         if st.session_state["username"] == app_user and st.session_state["password"] == app_password:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Non conserviamo la password in chiaro nello stato
+            del st.session_state["password"]
             del st.session_state["username"]
         else:
             st.session_state["password_correct"] = False
 
     if "password_correct" not in st.session_state:
-        # Schermata di Login
         st.markdown("<h2 style='text-align: center;'>🔐 Accesso Riservato - Software RGandja</h2>", unsafe_allow_html=True)
         st.markdown("<p style='text-align: center;'>Questa vetrina è protetta. Inserisci le credenziali autorizzate per accedere.</p>", unsafe_allow_html=True)
 
@@ -63,7 +63,6 @@ def check_password():
     else:
         return True
 
-# Se l'utente non è autenticato, interrompiamo l'esecuzione della pagina
 if not check_password():
     st.stop()
 
@@ -78,19 +77,16 @@ st.subheader("Event-Driven Enterprise Architecture & Outbox Pattern Manager")
 menu = st.sidebar.selectbox("Navigazione", ["📊 Pannello di Controllo", "📖 Presentazione & Documentazione Tecnica", "🔌 Guide di Integrazione API"])
 
 if menu == "📊 Pannello di Controllo":
-    st.markdown("### Stato del Sistema")
-    st.write("Benvenuto nell'area operativa protetta. Qui sotto puoi monitorare e testare lo stato dell'infrastruttura Outbox.")
+    st.markdown("### Stato del Sistema e Gestione Coda")
+    st.write("Benvenuto nell'area operativa protetta. Qui puoi monitorare, testare e controllare l'infrastruttura asincrona Outbox.")
 
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🚀 Inizializza Tabelle Outbox", use_container_width=True):
             try:
                 import psycopg2
-                # Connessione al database usando l'URL salvato nei segreti
                 conn = psycopg2.connect(db_url)
                 cur = conn.cursor()
-
-                # Creazione della tabella outbox di esempio
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS outbox_events (
                         id SERIAL PRIMARY KEY,
@@ -103,7 +99,6 @@ if menu == "📊 Pannello di Controllo":
                 conn.commit()
                 cur.close()
                 conn.close()
-
                 st.success("Tabelle Outbox create e inizializzate con successo su Neon!")
             except Exception as e:
                 st.error(f"Errore di connessione o inizializzazione: {e}")
@@ -111,10 +106,8 @@ if menu == "📊 Pannello di Controllo":
         if st.button("📥 Inserisci Evento di Test (PENDING)", use_container_width=True):
             try:
                 import psycopg2
-                import json
                 conn = psycopg2.connect(db_url)
                 cur = conn.cursor()
-
                 payload_test = json.dumps({"user_id": "test_user_999", "action": "SIMULATED_TRANSACTION"})
                 cur.execute(
                     "INSERT INTO outbox_events (event_type, payload, status) VALUES (%s, %s, %s);",
@@ -133,8 +126,6 @@ if menu == "📊 Pannello di Controllo":
                 import psycopg2
                 conn = psycopg2.connect(db_url)
                 cur = conn.cursor()
-
-                # Seleziona gli eventi pendenti
                 cur.execute("SELECT id, event_type, payload FROM outbox_events WHERE status = 'PENDING';")
                 events = cur.fetchall()
 
@@ -144,7 +135,6 @@ if menu == "📊 Pannello di Controllo":
                     count = 0
                     for event in events:
                         event_id, event_type, payload = event
-                        # Aggiorna lo stato dell'evento a 'PROCESSED'
                         cur.execute("UPDATE outbox_events SET status = 'PROCESSED' WHERE id = %s;", (event_id,))
                         count += 1
 
@@ -156,18 +146,44 @@ if menu == "📊 Pannello di Controllo":
             except Exception as e:
                 st.error(f"Errore durante l'esecuzione del worker: {e}")
 
+    st.markdown("---")
+    st.markdown("### 📋 Monitoraggio in Tempo Reale (Audit Log Coda Outbox)")
+
+    # Sezione Tabella di Audit dello stato database
+    try:
+        import psycopg2
+        conn = psycopg2.connect(db_url)
+        query = "SELECT id, event_type, payload, status, created_at FROM outbox_events ORDER BY id DESC LIMIT 20;"
+        df_events = pd.read_sql(query, conn)
+        conn.close()
+
+        if df_events.empty:
+            st.info("La tabella degli eventi è attualmente vuota. Inizializza le tabelle o inserisci un evento di test.")
+        else:
+            st.dataframe(df_events, use_container_width=True)
+    except Exception:
+        st.warning("Impossibile caricare la tabella di audit. Assicurati che le tabelle Outbox siano state inizializzate.")
+
 elif menu == "📖 Presentazione & Documentazione Tecnica":
-    st.markdown("## 📖 Informazioni sul Progetto")
+    st.markdown("## 📖 Informazioni sul Progetto e Specifiche Architetturali")
     st.write("""
-    **Software RGandja** è un'architettura enterprise progettata per garantire la massima affidabilità,
-    tracciabilità e sicurezza nella gestione degli eventi di sistema.
+    **Software RGandja** è un'architettura enterprise event-driven progettata per garantire la massima affidabilità,
+    tracciabilità transazionale e sicurezza nella gestione dei flussi critici di sistema.
     """)
 
-    st.markdown("### 🏛️ Architettura e Componenti Principali")
+    st.markdown("### 🔄 Come Funziona il Sistema (Flusso Operativo)")
     st.markdown("""
-    * **Transactional Outbox Pattern:** Garantisce che nessun evento vada perso durante le transazioni critiche del database, disaccoppiando la scrittura dei dati dalla pubblicazione dei messaggi.
-    * **Worker Autonomi:** Processi di background resilienti che prelevano gli eventi pendenti e li recapitano ai sistemi destinatari in modo asincrono.
-    * **Logging Enterprise:** Tracciamento rigoroso di ogni singola operazione per audit di sicurezza e conformità.
+    Il sistema si basa sul **Transactional Outbox Pattern**, risolvendo il problema della sincronizzazione tra database e broker di messaggi:
+    1. **Scrittura Atomica (PENDING):** Durante una transazione di business, l'evento viene salvato direttamente sul database relazionale (Neon) all'interno della tabella `outbox_events` con stato `PENDING`. Questo garantisce che nessun evento vada perso neanche in caso di crash della rete.
+    2. **Elaborazione Asincrona (Worker):** Un processo worker autonomo interroga periodicamente la tabella alla ricerca di eventi non ancora elaborati (`PENDING`).
+    3. **Consumazione e Transizione di Stato (PROCESSED):** Il worker preleva il payload JSON, lo spedisce al sistema ricevente (o lo simula) e aggiorna lo stato dell'evento in modo sicuro a `PROCESSED`, impedendo doppie elaborazioni (*at-least-once delivery* con gestione idempotente).
+    """)
+
+    st.markdown("### 🏛️ Componenti Principali")
+    st.markdown("""
+    * **Transactional Outbox:** Disaccoppia la scrittura dei dati dalla pubblicazione dei messaggi.
+    * **Worker Resilienti:** Gestione dei batch di eventi in background.
+    * **Audit Enterprise:** Tracciamento rigoroso di ogni singola transazione per fini legali e di conformità.
     """)
 
 elif menu == "🔌 Guide di Integrazione API":
@@ -189,4 +205,18 @@ elif menu == "🔌 Guide di Integrazione API":
     """, language="json")
 
     st.markdown("### 2. Sicurezza e Autenticazione delle API")
-    st.write("Tutte le chiamate esterne verso i componenti core richiedono intestazioni di sicurezza basate su token crittografati e validazione rigorosa dei parametri per prevenire vulnerabilità di iniezione o accessi non autorizzati.")
+    st.write("Tutte le chiamate esterne verso i componenti core richiedono intestazioni di sicurezza basate su token crittografati e validazione rigorosa dei parametri.")
+
+# ==========================================
+# DISCLAIMER LEGALE DI TUTELA E RISERVATEZZA
+# ==========================================
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: gray; font-size: 0.85em;'>
+    <strong>⚖️ AVVISO DI RISERVATEZZA E TUTELA LEGALE</strong><br>
+    Il software, le architetture, i codici sorgente e le specifiche tecniche associati al progetto <strong>Software RGandja</strong>
+    sono di proprietà esclusiva e protetti dalle normative vigenti in materia di proprietà intellettuale e segreto industriale.
+    Il presente ambiente è esclusivamente destinato a scopi di consultazione, verifica operativa e test autorizzati.
+    È tassativamente vietata qualsiasi forma di copia, riproduzione, estrazione di dati o divulgazione a terzi non preventivamente autorizzati.
+</div>
+""", unsafe_allow_html=True)
