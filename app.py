@@ -1,7 +1,9 @@
+import hashlib
 import json
 import os
 import sys
 import pandas as pd
+import psycopg2
 import streamlit as st
 
 # Aggiungiamo la cartella src al path per importare i moduli interni se necessario
@@ -19,30 +21,43 @@ st.set_page_config(
 # ==========================================
 db_url = st.secrets.get("url", st.secrets.get("postgres", {}).get("url"))
 
+
 # ==========================================
-# 1. SISTEMA DI SICUREZZA E AUTENTICAZIONE
+# 1. SISTEMA DI AUTENTICAZIONE DINAMICO DA DB
 # ==========================================
+def hash_password(password):
+  return hashlib.sha256(password.encode()).hexdigest()
 
 
-def check_password():
-  """Restituisce True se l'utente ha inserito la password corretta."""
-
-  try:
-    app_user = st.secrets["APP_USER"]
-    app_password = st.secrets["APP_PASSWORD"]
-  except Exception:
-    app_user = "admin"
-    app_password = "RgandjaSecurePassword2026!"
+def check_password_db():
+  """Verifica le credenziali interrogando la tabella 'users' su Neon."""
 
   def password_entered():
-    if (
-        st.session_state["username"] == app_user
-        and st.session_state["password"] == app_password
-    ):
-      st.session_state["password_correct"] = True
-      del st.session_state["password"]
-      del st.session_state["username"]
-    else:
+    username = st.session_state["username"]
+    raw_password = st.session_state["password"]
+    password_hash = hash_password(raw_password)
+
+    try:
+      conn = psycopg2.connect(db_url)
+      cur = conn.cursor()
+      cur.execute(
+          "SELECT role FROM users WHERE username = %s AND password_hash = %s;",
+          (username, password_hash),
+      )
+      user_record = cur.fetchone()
+      cur.close()
+      conn.close()
+
+      if user_record:
+        st.session_state["password_correct"] = True
+        st.session_state["logged_user"] = username
+        st.session_state["user_role"] = user_record[0]
+        del st.session_state["password"]
+        del st.session_state["username"]
+      else:
+        st.session_state["password_correct"] = False
+    except Exception as e:
+      st.error(f"Errore di connessione al database durante il login: {e}")
       st.session_state["password_correct"] = False
 
   if "password_correct" not in st.session_state:
@@ -52,8 +67,8 @@ def check_password():
         unsafe_allow_html=True,
     )
     st.markdown(
-        "<p style='text-align: center;'>Questa vetrina è protetta. Inserisci le"
-        " credenziali autorizzate per accedere.</p>",
+        "<p style='text-align: center;'>Inserisci le credenziali del tuo"
+        " account autorizzato.</p>",
         unsafe_allow_html=True,
     )
 
@@ -80,15 +95,23 @@ def check_password():
     return True
 
 
-if not check_password():
+if not check_password_db():
   st.stop()
 
 # ==========================================
-# 2. INTERFACCIA PRINCIPALE (DOPO IL LOGIN)
+# 2. INTERFACCIA PRINCIPALE & CONTROLLO RUOLI (RBAC)
 # ==========================================
+
+current_user = st.session_state.get("logged_user", "Utente")
+current_role = st.session_state.get("user_role", "client")
 
 st.title("🛡️ SOFTWARE RGANDJA")
 st.subheader("Event-Driven Enterprise Architecture & Resilient Outbox Manager")
+
+# Sidebar informativa sul profilo
+st.sidebar.info(
+    f"👤 Utente: **{current_user}**\n\n🔑 Profilo: **{current_role.upper()}**"
+)
 
 # Sidebar di navigazione interna
 menu = st.sidebar.selectbox(
@@ -102,139 +125,140 @@ menu = st.sidebar.selectbox(
 
 if menu == "📊 Pannello di Controllo":
   st.markdown("### Stato del Sistema e Gestione Coda Resiliente")
-  st.write(
-      "Area operativa avanzata con gestione dei tentativi (Retry) e isolamento"
-      " degli errori (Dead Letter Queue)."
-  )
 
-  col1, col2 = st.columns(2)
-  with col1:
-    if st.button(
-        "🚀 Inizializza / Aggiorna Tabelle Outbox (Con Retry & DLQ)",
-        use_container_width=True,
-    ):
-      try:
-        import psycopg2
+  # Area riservata esclusivamente agli amministratori
+  if current_role == "admin":
+    st.warning("⚠️ Area amministrativa avanzata (Accesso Admin)")
+    st.write(
+        "Area operativa avanzata con gestione dei tentativi (Retry) e isolamento"
+        " degli errori (Dead Letter Queue)."
+    )
 
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
-        # Schema avanzato con retry_count per la gestione della resilienza
-        cur.execute("""
-                    CREATE TABLE IF NOT EXISTS outbox_events (
-                        id SERIAL PRIMARY KEY,
-                        event_type VARCHAR(255) NOT NULL,
-                        payload JSONB NOT NULL,
-                        status VARCHAR(50) DEFAULT 'PENDING',
-                        retry_count INT DEFAULT 0,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    );
-                """)
-        conn.commit()
-        cur.close()
-        conn.close()
-        st.success(
-            "Tabelle Outbox aggiornate con supporto a Retry e Dead Letter Queue"
-            " su Neon!"
-        )
-      except Exception as e:
-        st.error(f"Errore di connessione o inizializzazione: {e}")
+    col1, col2 = st.columns(2)
+    with col1:
+      if st.button(
+          "🚀 Inizializza / Aggiorna Tabelle Outbox (Con Retry & DLQ)",
+          use_container_width=True,
+      ):
+        try:
+          conn = psycopg2.connect(db_url)
+          cur = conn.cursor()
+          cur.execute("""
+                        CREATE TABLE IF NOT EXISTS outbox_events (
+                            id SERIAL PRIMARY KEY,
+                            event_type VARCHAR(255) NOT NULL,
+                            payload JSONB NOT NULL,
+                            status VARCHAR(50) DEFAULT 'PENDING',
+                            retry_count INT DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+          conn.commit()
+          cur.close()
+          conn.close()
+          st.success(
+              "Tabelle Outbox aggiornate con supporto a Retry e Dead Letter"
+              " Queue su Neon!"
+          )
+        except Exception as e:
+          st.error(f"Errore di connessione o inizializzazione: {e}")
 
-    if st.button(
-        "📥 Inserisci Evento di Test Normale (PENDING)", use_container_width=True
-    ):
-      try:
-        import psycopg2
+      if st.button(
+          "📥 Inserisci Evento di Test Normale (PENDING)",
+          use_container_width=True,
+      ):
+        try:
+          conn = psycopg2.connect(db_url)
+          cur = conn.cursor()
+          payload_test = json.dumps(
+              {"user_id": current_user, "action": "SIMULATED_TRANSACTION"}
+          )
+          cur.execute(
+              "INSERT INTO outbox_events (event_type, payload, status,"
+              " retry_count) VALUES (%s, %s, %s, %s);",
+              ("TEST_EVENT", payload_test, "PENDING", 0),
+          )
+          conn.commit()
+          cur.close()
+          conn.close()
+          st.success("Evento di test regolare inserito con successo.")
+        except Exception as e:
+          st.error(f"Errore durante l'inserimento dell'evento: {e}")
 
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
-        payload_test = json.dumps(
-            {"user_id": "test_user_999", "action": "SIMULATED_TRANSACTION"}
-        )
-        cur.execute(
-            "INSERT INTO outbox_events (event_type, payload, status,"
-            " retry_count) VALUES (%s, %s, %s, %s);",
-            ("TEST_EVENT", payload_test, "PENDING", 0),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-        st.success("Evento di test regolare inserito con successo.")
-      except Exception as e:
-        st.error(f"Errore durante l'inserimento dell'evento: {e}")
+    with col2:
+      if st.button(
+          "⚙️ Esegui Worker Resiliente (Con Gestione Fallimenti)",
+          use_container_width=True,
+      ):
+        try:
+          import random
 
-  with col2:
-    if st.button(
-        "⚙️ Esegui Worker Resiliente (Con Gestione Fallimenti)",
-        use_container_width=True,
-    ):
-      try:
-        import random
-        import psycopg2
+          conn = psycopg2.connect(db_url)
+          cur = conn.cursor()
 
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
+          cur.execute(
+              "SELECT id, event_type, payload, retry_count FROM outbox_events"
+              " WHERE status = 'PENDING';"
+          )
+          events = cur.fetchall()
 
-        # Seleziona gli eventi in stato PENDING
-        cur.execute(
-            "SELECT id, event_type, payload, retry_count FROM outbox_events"
-            " WHERE status = 'PENDING';"
-        )
-        events = cur.fetchall()
+          if not events:
+            st.info("Nessun evento pendente trovato nella coda Outbox.")
+          else:
+            processed_count = 0
+            failed_count = 0
+            dlq_count = 0
 
-        if not events:
-          st.info("Nessun evento pendente trovato nella coda Outbox.")
-        else:
-          processed_count = 0
-          failed_count = 0
-          dlq_count = 0
+            for event in events:
+              event_id, event_type, payload, retry_count = event
+              simulated_failure = False
 
-          for event in events:
-            event_id, event_type, payload, retry_count = event
-
-            # Simulazione di instabilità di rete o errore di elaborazione
-            simulated_failure = False
-
-            if simulated_failure:
-              new_retry = retry_count + 1
-              if new_retry >= 3:
-                cur.execute(
-                    "UPDATE outbox_events SET status = 'FAILED', retry_count ="
-                    " %s WHERE id = %s;",
-                    (new_retry, event_id),
-                )
-                dlq_count += 1
+              if simulated_failure:
+                new_retry = retry_count + 1
+                if new_retry >= 3:
+                  cur.execute(
+                      "UPDATE outbox_events SET status = 'FAILED',"
+                      " retry_count = %s WHERE id = %s;",
+                      (new_retry, event_id),
+                  )
+                  dlq_count += 1
+                else:
+                  cur.execute(
+                      "UPDATE outbox_events SET retry_count = %s WHERE id ="
+                      " %s;",
+                      (new_retry, event_id),
+                  )
+                  failed_count += 1
               else:
                 cur.execute(
-                    "UPDATE outbox_events SET retry_count = %s WHERE id = %s;",
-                    (new_retry, event_id),
+                    "UPDATE outbox_events SET status = 'PROCESSED',"
+                    " retry_count = %s WHERE id = %s;",
+                    (retry_count + 1, event_id),
                 )
-                failed_count += 1
-            else:
-              cur.execute(
-                  "UPDATE outbox_events SET status = 'PROCESSED', retry_count ="
-                  " %s WHERE id = %s;",
-                  (retry_count + 1, event_id),
-              )
-              processed_count += 1
+                processed_count += 1
 
-          conn.commit()
-          st.success(
-              f"Worker completato: {processed_count} elaborati con successo,"
-              f" {failed_count} in retry, {dlq_count} inviati in Dead Letter"
-              " Queue (FAILED)."
-          )
+            conn.commit()
+            st.success(
+                f"Worker completato: {processed_count} elaborati con successo,"
+                f" {failed_count} in retry, {dlq_count} inviati in Dead Letter"
+                " Queue (FAILED)."
+            )
 
-        cur.close()
-        conn.close()
-      except Exception as e:
-        st.error(f"Errore durante l'esecuzione del worker resiliente: {e}")
+          cur.close()
+          conn.close()
+        except Exception as e:
+          st.error(f"Errore durante l'esecuzione del worker resiliente: {e}")
+  else:
+    st.info(
+        "👋 Benvenuto nell'area clienti. Da qui puoi monitorare lo stato in"
+        " tempo reale delle code e degli audit log associati alla tua"
+        " istanza."
+    )
 
   st.markdown("---")
   st.markdown("### 📋 Monitoraggio in Tempo Reale (Audit Log Avanzato)")
 
   try:
-    import psycopg2
-
     conn = psycopg2.connect(db_url)
     query = (
         "SELECT id, event_type, payload, status, retry_count, created_at FROM"
