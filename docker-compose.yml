@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: rgandja_db
+    restart: always
+    environment:
+      POSTGRES_USER: rgandja_user
+      POSTGRES_PASSWORD: rgandja_password
+      POSTGRES_DB: rgandja_engine_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

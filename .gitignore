@@ -1,0 +1,24 @@
+# Ambiente virtuale e dipendenze
+venv/
+.venv/
+ENV/
+
+# Credenziali e configurazioni sensibili
+.env
+*.env
+
+# File di cache di Python e compilazioni
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Log ed eventuali file temporanei di database locali
+logs/*.log
+database/
+
+# Editor e OS
+.vscode/
+.DS_Store
+Thumbs.db
