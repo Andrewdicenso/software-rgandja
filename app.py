@@ -33,6 +33,7 @@ def check_password_db():
   """Verifica le credenziali direttamente sul database Neon in modo bloccante."""
   if "password_correct" not in st.session_state:
     st.session_state["password_correct"] = False
+    st.session_state["login_attempted"] = False
 
   if not st.session_state["password_correct"]:
     st.markdown(
@@ -47,6 +48,7 @@ def check_password_db():
     )
 
     def password_entered():
+      st.session_state["login_attempted"] = True
       username = st.session_state.get("username", "")
       raw_password = st.session_state.get("password", "")
       password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
@@ -54,7 +56,6 @@ def check_password_db():
       try:
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
-        # Controlla sia l'hash che la password in chiaro per massima compatibilità
         cur.execute(
             "SELECT role FROM users WHERE username = %s AND (password_hash = %s"
             " OR password_hash = %s);",
@@ -68,7 +69,6 @@ def check_password_db():
           st.session_state["password_correct"] = True
           st.session_state["logged_user"] = username
           st.session_state["user_role"] = user_record[0]
-          # Pulizia campi temporanei
           if "password" in st.session_state:
             del st.session_state["password"]
           if "username" in st.session_state:
@@ -85,18 +85,13 @@ def check_password_db():
       st.text_input("Password", type="password", key="password")
       st.button("Accedi", on_click=password_entered, use_container_width=True)
 
-    if (
-        "password_correct" in st.session_state
-        and not st.session_state["password_correct"]
-        and "username" in st.session_state
-    ):
+    # Mostra l'errore SOLO se l'utente ha tentato il login e i dati sono errati
+    if st.session_state.get("login_attempted", False) and not st.session_state[
+        "password_correct"
+    ]:
       st.error("😕 Username o password errati. Riprova.")
 
-    st.stop()  # Interrompe l'esecuzione finché il login non va a buon fine
-
-
-# Eseguiamo il controllo di autenticazione bloccante all'avvio
-check_password_db()
+    st.stop()
 
 # ==========================================
 # 2. INTERFACCIA PRINCIPALE & CONTROLLO RUOLI (RBAC)
