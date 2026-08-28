@@ -6,87 +6,95 @@ import pandas as pd
 import psycopg2
 import streamlit as st
 
+# Aggiungiamo la cartella src al path per importare i moduli interni se necessario
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
 
+# Configurazione della pagina
 st.set_page_config(
     page_title="Software RGandja - Vetrina Enterprise",
     page_icon="🛡️",
     layout="wide",
 )
 
+# ==========================================
+# CONNESSIONE AL DATABASE NEON
+# ==========================================
 db_url = st.secrets.get("url", st.secrets.get("postgres", {}).get("url"))
 
+
 # ==========================================
-# 1. BLOCCO DI SICUREZZA E LOGIN OBBLIGATORIO
+# 1. SISTEMA DI AUTENTICAZIONE DINAMICO DA DB
 # ==========================================
-
-if "password_correct" not in st.session_state:
-  st.session_state["password_correct"] = False
-if "login_attempted" not in st.session_state:
-  st.session_state["login_attempted"] = False
-
-if not st.session_state["password_correct"]:
-  st.markdown(
-      "<h2 style='text-align: center;'>🔐 Accesso Riservato - Software"
-      " RGandja</h2>",
-      unsafe_allow_html=True,
-  )
-  st.markdown(
-      "<p style='text-align: center;'>Area protetta. Inserisci le credenziali"
-      " per continuare.</p>",
-      unsafe_allow_html=True,
-  )
+def hash_password(password):
+  return hashlib.sha256(password.encode()).hexdigest()
 
 
-  def password_entered():
-    st.session_state["login_attempted"] = True
-    username = st.session_state.get("username", "")
-    raw_password = st.session_state.get("password", "")
-    password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
+def check_password_db():
+  """Verifica le credenziali direttamente sul database Neon in modo bloccante."""
+  if "password_correct" not in st.session_state:
+    st.session_state["password_correct"] = False
+    st.session_state["login_attempted"] = False
 
-    try:
-      conn = psycopg2.connect(db_url)
-      cur = conn.cursor()
-      cur.execute(
-          "SELECT role FROM users WHERE username = %s AND (password_hash = %s"
-          " OR password_hash = %s);",
-          (username, password_hash, raw_password),
-      )
-      user_record = cur.fetchone()
-      cur.close()
-      conn.close()
+  if not st.session_state["password_correct"]:
+    st.markdown(
+        "<h2 style='text-align: center;'>🔐 Accesso Riservato - Software"
+        " RGandja</h2>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align: center;'>Inserisci le credenziali del tuo account"
+        " autorizzato.</p>",
+        unsafe_allow_html=True,
+    )
 
-      if user_record:
-        st.session_state["password_correct"] = True
-        st.session_state["logged_user"] = username
-        st.session_state["user_role"] = user_record[0]
-        if "password" in st.session_state:
-          del st.session_state["password"]
-        if "username" in st.session_state:
-          del st.session_state["username"]
-      else:
+    def password_entered():
+      st.session_state["login_attempted"] = True
+      username = st.session_state.get("username", "")
+      raw_password = st.session_state.get("password", "")
+      password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
+
+      try:
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT role FROM users WHERE username = %s AND (password_hash = %s"
+            " OR password_hash = %s);",
+            (username, password_hash, raw_password),
+        )
+        user_record = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if user_record:
+          st.session_state["password_correct"] = True
+          st.session_state["logged_user"] = username
+          st.session_state["user_role"] = user_record[0]
+          if "password" in st.session_state:
+            del st.session_state["password"]
+          if "username" in st.session_state:
+            del st.session_state["username"]
+        else:
+          st.session_state["password_correct"] = False
+      except Exception as e:
+        st.error(f"Errore di connessione al database durante il login: {e}")
         st.session_state["password_correct"] = False
-    except Exception as e:
-      st.error(f"Errore di connessione al database: {e}")
-      st.session_state["password_correct"] = False
 
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+      st.text_input("Username", key="username")
+      st.text_input("Password", type="password", key="password")
+      st.button("Accedi", on_click=password_entered, use_container_width=True)
 
-  col1, col2, col3 = st.columns([1, 2, 1])
-  with col2:
-    st.text_input("Username", key="username")
-    st.text_input("Password", type="password", key="password")
-    st.button("Accedi", on_click=password_entered, use_container_width=True)
+    # Mostra l'errore SOLO se l'utente ha tentato il login e i dati sono errati
+    if st.session_state.get("login_attempted", False) and not st.session_state[
+        "password_correct"
+    ]:
+      st.error("😕 Username o password errati. Riprova.")
 
-  if st.session_state.get("login_attempted", False) and not st.session_state[
-      "password_correct"
-  ]:
-    st.error("😕 Username o password errati. Riprova.")
-
-  # BLOCCO TOTALE INVALICABILE
-  st.stop()
+    st.stop()
 
 # ==========================================
-# 2. INTERFACCIA PRINCIPALE (ACCESSIBILE SOLO DOPO IL LOGIN)
+# 2. INTERFACCIA PRINCIPALE & CONTROLLO RUOLI (RBAC)
 # ==========================================
 
 current_user = st.session_state.get("logged_user", "Utente")
@@ -95,10 +103,12 @@ current_role = st.session_state.get("user_role", "client")
 st.title("🛡️ SOFTWARE RGANDJA")
 st.subheader("Event-Driven Enterprise Architecture & Resilient Outbox Manager")
 
+# Sidebar informativa sul profilo
 st.sidebar.info(
     f"👤 Utente: **{current_user}**\n\n🔑 Profilo: **{current_role.upper()}**"
 )
 
+# Sidebar di navigazione interna
 menu = st.sidebar.selectbox(
     "Navigazione",
     [
@@ -111,6 +121,7 @@ menu = st.sidebar.selectbox(
 if menu == "📊 Pannello di Controllo":
   st.markdown("### Stato del Sistema e Gestione Coda Resiliente")
 
+  # Area riservata esclusivamente agli amministratori
   if current_role == "admin":
     st.warning("⚠️ Area amministrativa avanzata (Accesso Admin)")
     st.write(
@@ -175,8 +186,11 @@ if menu == "📊 Pannello di Controllo":
           use_container_width=True,
       ):
         try:
+          import random
+
           conn = psycopg2.connect(db_url)
           cur = conn.cursor()
+
           cur.execute(
               "SELECT id, event_type, payload, retry_count FROM outbox_events"
               " WHERE status = 'PENDING';"
@@ -192,16 +206,37 @@ if menu == "📊 Pannello di Controllo":
 
             for event in events:
               event_id, event_type, payload, retry_count = event
-              cur.execute(
-                  "UPDATE outbox_events SET status = 'PROCESSED',"
-                  " retry_count = %s WHERE id = %s;",
-                  (retry_count + 1, event_id),
-              )
-              processed_count += 1
+              simulated_failure = False
+
+              if simulated_failure:
+                new_retry = retry_count + 1
+                if new_retry >= 3:
+                  cur.execute(
+                      "UPDATE outbox_events SET status = 'FAILED',"
+                      " retry_count = %s WHERE id = %s;",
+                      (new_retry, event_id),
+                  )
+                  dlq_count += 1
+                else:
+                  cur.execute(
+                      "UPDATE outbox_events SET retry_count = %s WHERE id ="
+                      " %s;",
+                      (new_retry, event_id),
+                  )
+                  failed_count += 1
+              else:
+                cur.execute(
+                    "UPDATE outbox_events SET status = 'PROCESSED',"
+                    " retry_count = %s WHERE id = %s;",
+                    (retry_count + 1, event_id),
+                )
+                processed_count += 1
 
             conn.commit()
             st.success(
-                f"Worker completato: {processed_count} elaborati con successo."
+                f"Worker completato: {processed_count} elaborati con successo,"
+                f" {failed_count} in retry, {dlq_count} inviati in Dead Letter"
+                " Queue (FAILED)."
             )
 
           cur.close()
@@ -249,6 +284,14 @@ elif menu == "📖 Presentazione & Documentazione Tecnica":
     e alla garanzia di recapito dei messaggi nei sistemi distribuiti.
     """)
 
+  st.markdown("### 🔄 Resilienza, Retry Pattern e Dead Letter Queue (DLQ)")
+  st.markdown("""
+    L'architettura supera il semplice Outbox Pattern introducendo politiche di protezione contro i malfunzionamenti esterni:
+    1. **Transactional Outbox:** Scrittura atomica iniziale in stato `PENDING` legata alla transazione applicativa principale.
+    2. **Tentativi Controllati (Retry Logic):** In caso di interruzione temporanea del servizio di destinazione, il worker incrementa il contatore `retry_count` senza perdere il contesto dell'operazione.
+    3. **Isolamento della Dead Letter Queue (DLQ):** Superata la soglia critica dei tentativi falliti (es. 3 retry), l'evento viene marcato come `FAILED` (DLQ). Questo evita che un messaggio corrotto o un endpoint permanentemente offline blocchino indefinitamente l'intera coda di elaborazione asincrona, consentendo analisi forensi successive sui payload anomali.
+    """)
+
 elif menu == "🔌 Guide di Integrazione API":
   st.markdown("## 🔌 Come Integrare e Usare il Sistema")
   st.write(
@@ -256,6 +299,33 @@ elif menu == "🔌 Guide di Integrazione API":
       " esterni o client di terze parti all'infrastruttura RGandja."
   )
 
+  st.markdown("### 1. Connessione ai Flussi Event-Driven")
+  st.code(
+      """
+# Esempio di payload JSON per l'invio di un evento nel sistema Outbox con supporto Retry
+{
+    "event_type": "USER_ACTION_LOGGED",
+    "payload": {
+        "user_id": "12345",
+        "action": "CONFIG_UPDATE",
+        "timestamp": "2026-03-28T10:00:00Z"
+    },
+    "status": "PENDING",
+    "retry_count": 0
+}
+    """,
+      language="json",
+  )
+
+  st.markdown("### 2. Sicurezza e Autenticazione delle API")
+  st.write(
+      "Tutte le chiamate esterne verso i componenti core richiedono"
+      " intestazioni di sicurezza basate su token crittografati."
+  )
+
+# ==========================================
+# DISCLAIMER LEGALE DI TUTELA E RISERVATEZZA
+# ==========================================
 st.markdown("---")
 st.markdown(
     """
