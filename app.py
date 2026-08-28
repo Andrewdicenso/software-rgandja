@@ -30,49 +30,54 @@ def hash_password(password):
 
 
 def check_password_db():
-  """Verifica le credenziali direttamente sul database Neon."""
-
-  def password_entered():
-    username = st.session_state["username"]
-    raw_password = st.session_state["password"]
-    password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
-
-    try:
-      conn = psycopg2.connect(db_url)
-      cur = conn.cursor()
-      # Controlla sia l'hash che la password in chiaro per massima compatibilità
-      cur.execute(
-          "SELECT role FROM users WHERE username = %s AND (password_hash ="
-          " %s OR password_hash = %s);",
-          (username, password_hash, raw_password),
-      )
-      user_record = cur.fetchone()
-      cur.close()
-      conn.close()
-
-      if user_record:
-        st.session_state["password_correct"] = True
-        st.session_state["logged_user"] = username
-        st.session_state["user_role"] = user_record[0]
-        del st.session_state["password"]
-        del st.session_state["username"]
-      else:
-        st.session_state["password_correct"] = False
-    except Exception as e:
-      st.error(f"Errore di connessione al database durante il login: {e}")
-      st.session_state["password_correct"] = False
-
+  """Verifica le credenziali direttamente sul database Neon in modo bloccante."""
   if "password_correct" not in st.session_state:
+    st.session_state["password_correct"] = False
+
+  if not st.session_state["password_correct"]:
     st.markdown(
         "<h2 style='text-align: center;'>🔐 Accesso Riservato - Software"
         " RGandja</h2>",
         unsafe_allow_html=True,
     )
     st.markdown(
-        "<p style='text-align: center;'>Inserisci le credenziali del tuo"
-        " account autorizzato.</p>",
+        "<p style='text-align: center;'>Inserisci le credenziali del tuo account"
+        " autorizzato.</p>",
         unsafe_allow_html=True,
     )
+
+    def password_entered():
+      username = st.session_state.get("username", "")
+      raw_password = st.session_state.get("password", "")
+      password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
+
+      try:
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        # Controlla sia l'hash che la password in chiaro per massima compatibilità
+        cur.execute(
+            "SELECT role FROM users WHERE username = %s AND (password_hash = %s"
+            " OR password_hash = %s);",
+            (username, password_hash, raw_password),
+        )
+        user_record = cur.fetchone()
+        cur.close()
+        conn.close()
+
+        if user_record:
+          st.session_state["password_correct"] = True
+          st.session_state["logged_user"] = username
+          st.session_state["user_role"] = user_record[0]
+          # Pulizia campi temporanei
+          if "password" in st.session_state:
+            del st.session_state["password"]
+          if "username" in st.session_state:
+            del st.session_state["username"]
+        else:
+          st.session_state["password_correct"] = False
+      except Exception as e:
+        st.error(f"Errore di connessione al database durante il login: {e}")
+        st.session_state["password_correct"] = False
 
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
@@ -83,18 +88,16 @@ def check_password_db():
     if (
         "password_correct" in st.session_state
         and not st.session_state["password_correct"]
+        and "username" in st.session_state
     ):
       st.error("😕 Username o password errati. Riprova.")
-    return False
 
-  elif not st.session_state["password_correct"]:
-    st.text_input("Username", key="username")
-    st.text_input("Password", type="password", key="password")
-    st.button("Accedi", on_click=password_entered)
-    st.error("😕 Username o password errati.")
-    return False
-  else:
-    return True
+    st.stop()  # Interrompe l'esecuzione finché il login non va a buon fine
+
+
+# Eseguiamo il controllo di autenticazione bloccante all'avvio
+check_password_db()
+
 # ==========================================
 # 2. INTERFACCIA PRINCIPALE & CONTROLLO RUOLI (RBAC)
 # ==========================================
@@ -286,9 +289,7 @@ elif menu == "📖 Presentazione & Documentazione Tecnica":
     e alla garanzia di recapito dei messaggi nei sistemi distribuiti.
     """)
 
-  st.markdown(
-      "### 🔄 Resilienza, Retry Pattern e Dead Letter Queue (DLQ)"
-  )
+  st.markdown("### 🔄 Resilienza, Retry Pattern e Dead Letter Queue (DLQ)")
   st.markdown("""
     L'architettura supera il semplice Outbox Pattern introducendo politiche di protezione contro i malfunzionamenti esterni:
     1. **Transactional Outbox:** Scrittura atomica iniziale in stato `PENDING` legata alla transazione applicativa principale.
