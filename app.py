@@ -15,7 +15,7 @@ st.set_page_config(
 # ==========================================
 # CONNESSIONE AL DATABASE NEON
 # ==========================================
-db_url = st.secrets["postgres"]["url"]
+db_url = st.secrets.get("url", st.secrets.get("postgres", {}).get("url"))
 
 # ==========================================
 # 1. SISTEMA DI SICUREZZA E AUTENTICAZIONE
