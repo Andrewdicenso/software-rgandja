@@ -6,95 +6,103 @@ import pandas as pd
 import psycopg2
 import streamlit as st
 
-# Aggiungiamo la cartella src al path per importare i moduli interni se necessario
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
 
-# Configurazione della pagina
 st.set_page_config(
     page_title="Software RGandja - Vetrina Enterprise",
     page_icon="🛡️",
     layout="wide",
 )
 
-# ==========================================
-# CONNESSIONE AL DATABASE NEON
-# ==========================================
 db_url = st.secrets.get("url", st.secrets.get("postgres", {}).get("url"))
 
+# ==========================================
+# GESTIONE STATO AUTENTICAZIONE E LOGOUT
+# ==========================================
+if "password_correct" not in st.session_state:
+  st.session_state["password_correct"] = False
+if "login_attempted" not in st.session_state:
+  st.session_state["login_attempted"] = False
+
+
+def logout():
+  st.session_state["password_correct"] = False
+  st.session_state["login_attempted"] = False
+  st.session_state.pop("logged_user", None)
+  st.session_state.pop("user_role", None)
+  st.rerun()
+
 
 # ==========================================
-# 1. SISTEMA DI AUTENTICAZIONE DINAMICO DA DB
+# 1. SCHERMATA DI LOGIN BLOCCANTE
 # ==========================================
-def hash_password(password):
-  return hashlib.sha256(password.encode()).hexdigest()
+if not st.session_state["password_correct"]:
+  st.markdown(
+      "<h2 style='text-align: center;'>🔐 Accesso Riservato - Software"
+      " RGandja</h2>",
+      unsafe_allow_html=True,
+  )
+  st.markdown(
+      "<p style='text-align: center;'>Inserisci le credenziali del tuo account"
+      " autorizzato.</p>",
+      unsafe_allow_html=True,
+  )
 
 
-def check_password_db():
-  """Verifica le credenziali direttamente sul database Neon in modo bloccante."""
-  if "password_correct" not in st.session_state:
-    st.session_state["password_correct"] = False
-    st.session_state["login_attempted"] = False
+  def password_entered():
+    st.session_state["login_attempted"] = True
+    username = st.session_state.get("username", "").strip()
+    raw_password = st.session_state.get("password", "")
+    password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
 
-  if not st.session_state["password_correct"]:
-    st.markdown(
-        "<h2 style='text-align: center;'>🔐 Accesso Riservato - Software"
-        " RGandja</h2>",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        "<p style='text-align: center;'>Inserisci le credenziali del tuo account"
-        " autorizzato.</p>",
-        unsafe_allow_html=True,
-    )
+    try:
+      conn = psycopg2.connect(db_url)
+      cur = conn.cursor()
+      cur.execute(
+          "SELECT role, password_hash FROM users WHERE username = %s;",
+          (username,),
+      )
+      user_record = cur.fetchone()
+      cur.close()
+      conn.close()
 
-    def password_entered():
-      st.session_state["login_attempted"] = True
-      username = st.session_state.get("username", "")
-      raw_password = st.session_state.get("password", "")
-      password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
-
-      try:
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT role FROM users WHERE username = %s AND (password_hash = %s"
-            " OR password_hash = %s);",
-            (username, password_hash, raw_password),
-        )
-        user_record = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if user_record:
+      if user_record:
+        db_role, db_pass_stored = user_record
+        if (
+            db_pass_stored == password_hash
+            or db_pass_stored == raw_password
+            or hashlib.sha256(db_pass_stored.encode()).hexdigest()
+            == password_hash
+        ):
           st.session_state["password_correct"] = True
           st.session_state["logged_user"] = username
-          st.session_state["user_role"] = user_record[0]
-          if "password" in st.session_state:
-            del st.session_state["password"]
-          if "username" in st.session_state:
-            del st.session_state["username"]
+          st.session_state["user_role"] = db_role
+          st.session_state.pop("password", None)
+          st.session_state.pop("username", None)
         else:
           st.session_state["password_correct"] = False
-      except Exception as e:
-        st.error(f"Errore di connessione al database durante il login: {e}")
+      else:
         st.session_state["password_correct"] = False
+    except Exception as e:
+      st.error(f"Errore di connessione al database durante il login: {e}")
+      st.session_state["password_correct"] = False
 
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-      st.text_input("Username", key="username")
-      st.text_input("Password", type="password", key="password")
-      st.button("Accedi", on_click=password_entered, use_container_width=True)
 
-    # Mostra l'errore SOLO se l'utente ha tentato il login e i dati sono errati
-    if st.session_state.get("login_attempted", False) and not st.session_state[
-        "password_correct"
-    ]:
-      st.error("😕 Username o password errati. Riprova.")
+  col1, col2, col3 = st.columns([1, 2, 1])
+  with col2:
+    st.text_input("Username", key="username")
+    st.text_input("Password", type="password", key="password")
+    st.button("Accedi", on_click=password_entered, use_container_width=True)
 
-    st.stop()
+  if st.session_state.get("login_attempted", False) and not st.session_state[
+      "password_correct"
+  ]:
+    st.error("😕 Username o password errati. Riprova.")
+
+  st.stop()
 
 # ==========================================
-# 2. INTERFACCIA PRINCIPALE & CONTROLLO RUOLI (RBAC)
+# 2. INTERFACCIA PRINCIPALE & LOGOUT IN SIDEBAR
 # ==========================================
 
 current_user = st.session_state.get("logged_user", "Utente")
@@ -103,12 +111,16 @@ current_role = st.session_state.get("user_role", "client")
 st.title("🛡️ SOFTWARE RGANDJA")
 st.subheader("Event-Driven Enterprise Architecture & Resilient Outbox Manager")
 
-# Sidebar informativa sul profilo
 st.sidebar.info(
     f"👤 Utente: **{current_user}**\n\n🔑 Profilo: **{current_role.upper()}**"
 )
 
-# Sidebar di navigazione interna
+st.sidebar.markdown("---")
+st.sidebar.button(
+    "🚪 Logout", on_click=logout, use_container_width=True, type="primary"
+)
+st.sidebar.markdown("---")
+
 menu = st.sidebar.selectbox(
     "Navigazione",
     [
@@ -121,7 +133,6 @@ menu = st.sidebar.selectbox(
 if menu == "📊 Pannello di Controllo":
   st.markdown("### Stato del Sistema e Gestione Coda Resiliente")
 
-  # Area riservata esclusivamente agli amministratori
   if current_role == "admin":
     st.warning("⚠️ Area amministrativa avanzata (Accesso Admin)")
     st.write(
@@ -186,11 +197,8 @@ if menu == "📊 Pannello di Controllo":
           use_container_width=True,
       ):
         try:
-          import random
-
           conn = psycopg2.connect(db_url)
           cur = conn.cursor()
-
           cur.execute(
               "SELECT id, event_type, payload, retry_count FROM outbox_events"
               " WHERE status = 'PENDING';"
@@ -323,9 +331,6 @@ elif menu == "🔌 Guide di Integrazione API":
       " intestazioni di sicurezza basate su token crittografati."
   )
 
-# ==========================================
-# DISCLAIMER LEGALE DI TUTELA E RISERVATEZZA
-# ==========================================
 st.markdown("---")
 st.markdown(
     """
