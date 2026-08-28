@@ -108,6 +108,25 @@ if menu == "📊 Pannello di Controllo":
             except Exception as e:
                 st.error(f"Errore di connessione o inizializzazione: {e}")
 
+        if st.button("📥 Inserisci Evento di Test (PENDING)", use_container_width=True):
+            try:
+                import psycopg2
+                import json
+                conn = psycopg2.connect(db_url)
+                cur = conn.cursor()
+
+                payload_test = json.dumps({"user_id": "test_user_999", "action": "SIMULATED_TRANSACTION"})
+                cur.execute(
+                    "INSERT INTO outbox_events (event_type, payload, status) VALUES (%s, %s, %s);",
+                    ("TEST_EVENT", payload_test, "PENDING")
+                )
+                conn.commit()
+                cur.close()
+                conn.close()
+                st.success("Evento di test inserito con successo! Ora puoi eseguire il worker.")
+            except Exception as e:
+                st.error(f"Errore durante l'inserimento dell'evento: {e}")
+
     with col2:
         if st.button("⚙️ Esegui Worker Eventi Pendenti", use_container_width=True):
             try:
