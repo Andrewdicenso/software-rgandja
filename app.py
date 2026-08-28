@@ -30,19 +30,21 @@ def hash_password(password):
 
 
 def check_password_db():
-  """Verifica le credenziali interrogando la tabella 'users' su Neon."""
+  """Verifica le credenziali direttamente sul database Neon."""
 
   def password_entered():
     username = st.session_state["username"]
     raw_password = st.session_state["password"]
-    password_hash = hash_password(raw_password)
+    password_hash = hashlib.sha256(raw_password.encode()).hexdigest()
 
     try:
       conn = psycopg2.connect(db_url)
       cur = conn.cursor()
+      # Controlla sia l'hash che la password in chiaro per massima compatibilità
       cur.execute(
-          "SELECT role FROM users WHERE username = %s AND password_hash = %s;",
-          (username, password_hash),
+          "SELECT role FROM users WHERE username = %s AND (password_hash ="
+          " %s OR password_hash = %s);",
+          (username, password_hash, raw_password),
       )
       user_record = cur.fetchone()
       cur.close()
@@ -93,11 +95,6 @@ def check_password_db():
     return False
   else:
     return True
-
-
-if not check_password_db():
-  st.stop()
-
 # ==========================================
 # 2. INTERFACCIA PRINCIPALE & CONTROLLO RUOLI (RBAC)
 # ==========================================
