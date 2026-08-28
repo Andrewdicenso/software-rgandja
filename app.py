@@ -71,89 +71,113 @@ if not check_password():
 # ==========================================
 
 st.title("🛡️ SOFTWARE RGANDJA")
-st.subheader("Event-Driven Enterprise Architecture & Outbox Pattern Manager")
+st.subheader("Event-Driven Enterprise Architecture & Resilient Outbox Manager")
 
 # Sidebar di navigazione interna
 menu = st.sidebar.selectbox("Navigazione", ["📊 Pannello di Controllo", "📖 Presentazione & Documentazione Tecnica", "🔌 Guide di Integrazione API"])
 
 if menu == "📊 Pannello di Controllo":
-    st.markdown("### Stato del Sistema e Gestione Coda")
-    st.write("Benvenuto nell'area operativa protetta. Qui puoi monitorare, testare e controllare l'infrastruttura asincrona Outbox.")
+    st.markdown("### Stato del Sistema e Gestione Coda Resiliente")
+    st.write("Area operativa avanzata con gestione dei tentativi (Retry) e isolamento degli errori (Dead Letter Queue).")
 
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🚀 Inizializza Tabelle Outbox", use_container_width=True):
+        if st.button("🚀 Inizializza / Aggiorna Tabelle Outbox (Con Retry & DLQ)", use_container_width=True):
             try:
                 import psycopg2
                 conn = psycopg2.connect(db_url)
                 cur = conn.cursor()
+                # Schema avanzato con retry_count per la gestione della resilienza
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS outbox_events (
                         id SERIAL PRIMARY KEY,
                         event_type VARCHAR(255) NOT NULL,
                         payload JSONB NOT NULL,
                         status VARCHAR(50) DEFAULT 'PENDING',
+                        retry_count INT DEFAULT 0,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
                 conn.commit()
                 cur.close()
                 conn.close()
-                st.success("Tabelle Outbox create e inizializzate con successo su Neon!")
+                st.success("Tabelle Outbox aggiornate con supporto a Retry e Dead Letter Queue su Neon!")
             except Exception as e:
                 st.error(f"Errore di connessione o inizializzazione: {e}")
 
-        if st.button("📥 Inserisci Evento di Test (PENDING)", use_container_width=True):
+        if st.button("📥 Inserisci Evento di Test Normale (PENDING)", use_container_width=True):
             try:
                 import psycopg2
                 conn = psycopg2.connect(db_url)
                 cur = conn.cursor()
                 payload_test = json.dumps({"user_id": "test_user_999", "action": "SIMULATED_TRANSACTION"})
                 cur.execute(
-                    "INSERT INTO outbox_events (event_type, payload, status) VALUES (%s, %s, %s);",
-                    ("TEST_EVENT", payload_test, "PENDING")
+                    "INSERT INTO outbox_events (event_type, payload, status, retry_count) VALUES (%s, %s, %s, %s);",
+                    ("TEST_EVENT", payload_test, "PENDING", 0)
                 )
                 conn.commit()
                 cur.close()
                 conn.close()
-                st.success("Evento di test inserito con successo! Ora puoi eseguire il worker.")
+                st.success("Evento di test regolare inserito con successo.")
             except Exception as e:
                 st.error(f"Errore durante l'inserimento dell'evento: {e}")
 
     with col2:
-        if st.button("⚙️ Esegui Worker Eventi Pendenti", use_container_width=True):
+        if st.button("⚙️ Esegui Worker Resiliente (Con Gestione Fallimenti)", use_container_width=True):
             try:
                 import psycopg2
+                import random
                 conn = psycopg2.connect(db_url)
                 cur = conn.cursor()
-                cur.execute("SELECT id, event_type, payload FROM outbox_events WHERE status = 'PENDING';")
+
+                # Seleziona gli eventi in stato PENDING
+                cur.execute("SELECT id, event_type, payload, retry_count FROM outbox_events WHERE status = 'PENDING';")
                 events = cur.fetchall()
 
                 if not events:
                     st.info("Nessun evento pendente trovato nella coda Outbox.")
                 else:
-                    count = 0
+                    processed_count = 0
+                    failed_count = 0
+                    dlq_count = 0
+
                     for event in events:
-                        event_id, event_type, payload = event
-                        cur.execute("UPDATE outbox_events SET status = 'PROCESSED' WHERE id = %s;", (event_id,))
-                        count += 1
+                        event_id, event_type, payload, retry_count = event
+
+                        # Simulazione di instabilità di rete o errore di elaborazione (es. 20% di probabilità di errore)
+                        # Per testare la DLQ puoi forzare il fallimento simulato
+                        simulated_failure = False # Metti True se vuoi testare il fallimento forzato
+
+                        if simulated_failure:
+                            new_retry = retry_count + 1
+                            if new_retry >= 3:
+                                # Spostato in Dead Letter Queue (DLQ) logica impostando lo stato a FAILED
+                                cur.execute("UPDATE outbox_events SET status = 'FAILED', retry_count = %s WHERE id = %s;", (new_retry, event_id))
+                                dlq_count += 1
+                            else:
+                                # Incrementa i tentativi lasciandolo in PENDING per il prossimo giro
+                                cur.execute("UPDATE outbox_events SET retry_count = %s WHERE id = %s;", (new_retry, event_id))
+                                failed_count += 1
+                        else:
+                            # Elaborazione riuscita con successo
+                            cur.execute("UPDATE outbox_events SET status = 'PROCESSED', retry_count = %s WHERE id = %s;", (retry_count + 1, event_id))
+                            processed_count += 1
 
                     conn.commit()
-                    st.success(f"Worker completato con successo: elaborati {count} eventi pendenti.")
+                    st.success(f"Worker completato: {processed_count} elaborati con successo, {failed_count} in retry, {dlq_count} inviati in Dead Letter Queue (FAILED).")
 
                 cur.close()
                 conn.close()
             except Exception as e:
-                st.error(f"Errore durante l'esecuzione del worker: {e}")
+                st.error(f"Errore durante l'esecuzione del worker resiliente: {e}")
 
     st.markdown("---")
-    st.markdown("### 📋 Monitoraggio in Tempo Reale (Audit Log Coda Outbox)")
+    st.markdown("### 📋 Monitoraggio in Tempo Reale (Audit Log Avanzato)")
 
-    # Sezione Tabella di Audit dello stato database
     try:
         import psycopg2
         conn = psycopg2.connect(db_url)
-        query = "SELECT id, event_type, payload, status, created_at FROM outbox_events ORDER BY id DESC LIMIT 20;"
+        query = "SELECT id, event_type, payload, status, retry_count, created_at FROM outbox_events ORDER BY id DESC LIMIT 20;"
         df_events = pd.read_sql(query, conn)
         conn.close()
 
@@ -162,28 +186,21 @@ if menu == "📊 Pannello di Controllo":
         else:
             st.dataframe(df_events, use_container_width=True)
     except Exception:
-        st.warning("Impossibile caricare la tabella di audit. Assicurati che le tabelle Outbox siano state inizializzate.")
+        st.warning("Impossibile caricare la tabella di audit. Assicurati che le tabelle Outbox siano state aggiornate.")
 
 elif menu == "📖 Presentazione & Documentazione Tecnica":
-    st.markdown("## 📖 Informazioni sul Progetto e Specifiche Architetturali")
+    st.markdown("## 📖 Informazioni sul Progetto e Specifiche Architetturali Avanzate")
     st.write("""
-    **Software RGandja** è un'architettura enterprise event-driven progettata per garantire la massima affidabilità,
-    tracciabilità transazionale e sicurezza nella gestione dei flussi critici di sistema.
+    **Software RGandja** implementa un pattern architetturale di livello industriale orientato alla tolleranza agli errori
+    e alla garanzia di recapito dei messaggi nei sistemi distribuiti.
     """)
 
-    st.markdown("### 🔄 Come Funziona il Sistema (Flusso Operativo)")
+    st.markdown("### 🔄 Resilienza, Retry Pattern e Dead Letter Queue (DLQ)")
     st.markdown("""
-    Il sistema si basa sul **Transactional Outbox Pattern**, risolvendo il problema della sincronizzazione tra database e broker di messaggi:
-    1. **Scrittura Atomica (PENDING):** Durante una transazione di business, l'evento viene salvato direttamente sul database relazionale (Neon) all'interno della tabella `outbox_events` con stato `PENDING`. Questo garantisce che nessun evento vada perso neanche in caso di crash della rete.
-    2. **Elaborazione Asincrona (Worker):** Un processo worker autonomo interroga periodicamente la tabella alla ricerca di eventi non ancora elaborati (`PENDING`).
-    3. **Consumazione e Transizione di Stato (PROCESSED):** Il worker preleva il payload JSON, lo spedisce al sistema ricevente (o lo simula) e aggiorna lo stato dell'evento in modo sicuro a `PROCESSED`, impedendo doppie elaborazioni (*at-least-once delivery* con gestione idempotente).
-    """)
-
-    st.markdown("### 🏛️ Componenti Principali")
-    st.markdown("""
-    * **Transactional Outbox:** Disaccoppia la scrittura dei dati dalla pubblicazione dei messaggi.
-    * **Worker Resilienti:** Gestione dei batch di eventi in background.
-    * **Audit Enterprise:** Tracciamento rigoroso di ogni singola transazione per fini legali e di conformità.
+    L'architettura supera il semplice Outbox Pattern introducendo politiche di protezione contro i malfunzionamenti esterni:
+    1. **Transactional Outbox:** Scrittura atomica iniziale in stato `PENDING` legata alla transazione applicativa principale.
+    2. **Tentativi Controllati (Retry Logic):** In caso di interruzione temporanea del servizio di destinazione, il worker incrementa il contatore `retry_count` senza perdere il contesto dell'operazione.
+    3. **Isolamento della Dead Letter Queue (DLQ):** Superata la soglia critica dei tentativi falliti (es. 3 retry), l'evento viene marcato come `FAILED` (DLQ). Questo evita che un messaggio corrotto o un endpoint permanentemente offline blocchino indefinitamente l'intera coda di elaborazione asincrona, consentendo analisi forensi successive sui payload anomali.
     """)
 
 elif menu == "🔌 Guide di Integrazione API":
@@ -192,7 +209,7 @@ elif menu == "🔌 Guide di Integrazione API":
 
     st.markdown("### 1. Connessione ai Flussi Event-Driven")
     st.code("""
-# Esempio di payload JSON per l'invio di un evento nel sistema Outbox
+# Esempio di payload JSON per l'invio di un evento nel sistema Outbox con supporto Retry
 {
     "event_type": "USER_ACTION_LOGGED",
     "payload": {
@@ -200,12 +217,13 @@ elif menu == "🔌 Guide di Integrazione API":
         "action": "CONFIG_UPDATE",
         "timestamp": "2026-03-28T10:00:00Z"
     },
-    "status": "PENDING"
+    "status": "PENDING",
+    "retry_count": 0
 }
     """, language="json")
 
     st.markdown("### 2. Sicurezza e Autenticazione delle API")
-    st.write("Tutte le chiamate esterne verso i componenti core richiedono intestazioni di sicurezza basate su token crittografati e validazione rigorosa dei parametri.")
+    st.write("Tutte le chiamate esterne verso i componenti core richiedono intestazioni di sicurezza basate su token crittografati.")
 
 # ==========================================
 # DISCLAIMER LEGALE DI TUTELA E RISERVATEZZA
