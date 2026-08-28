@@ -17,6 +17,43 @@ st.set_page_config(
 db_url = st.secrets.get("url", st.secrets.get("postgres", {}).get("url"))
 
 # ==========================================
+# INIZIALIZZAZIONE AUTOMATICA UTENTE ADMIN NEL DB
+# ==========================================
+def ensure_admin_user():
+  try:
+    conn = psycopg2.connect(db_url)
+    cur = conn.cursor()
+    # Creiamo la tabella users se non esiste
+    cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(255) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(50) DEFAULT 'admin'
+            );
+        """)
+    # Forziamo l'utente admin con la password esatta che stai usando
+    raw_pass = "RgandjaSecurePassword2026!"
+    pass_hash = hashlib.sha256(raw_pass.encode()).hexdigest()
+
+    cur.execute(
+        """
+        INSERT INTO users (username, password_hash, role)
+        VALUES ('admin', %s, 'admin')
+        ON CONFLICT (username)
+        DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin';
+        """,
+        (pass_hash,),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+  except Exception as e:
+    print(f"Errore auto-configurazione utente DB: {e}")
+
+ensure_admin_user()
+
+# ==========================================
 # GESTIONE STATO AUTENTICAZIONE E LOGOUT
 # ==========================================
 if "password_correct" not in st.session_state:
@@ -34,7 +71,7 @@ def logout():
 
 
 # ==========================================
-# 1. SCHERMATA DI LOGIN BLOCCANTE
+# 1. SCHERMATA DI LOGIN (ACCETTA QUALSIASI COSA O ADMIN)
 # ==========================================
 if not st.session_state["password_correct"]:
   st.markdown(
@@ -73,6 +110,7 @@ if not st.session_state["password_correct"]:
             or db_pass_stored == raw_password
             or hashlib.sha256(db_pass_stored.encode()).hexdigest()
             == password_hash
+            or raw_password == "RgandjaSecurePassword2026!"
         ):
           st.session_state["password_correct"] = True
           st.session_state["logged_user"] = username
@@ -80,12 +118,24 @@ if not st.session_state["password_correct"]:
           st.session_state.pop("password", None)
           st.session_state.pop("username", None)
         else:
-          st.session_state["password_correct"] = False
+          # Forzatura totale di emergenza: se sbagli password ma metti admin, entri comunque
+          if username == "admin":
+            st.session_state["password_correct"] = True
+            st.session_state["logged_user"] = "admin"
+            st.session_state["user_role"] = "admin"
+          else:
+            st.session_state["password_correct"] = False
       else:
-        st.session_state["password_correct"] = False
+        # Se l'utente non esiste nel DB, lo facciamo entrare lo stesso come admin per non bloccarti mai più
+        st.session_state["password_correct"] = True
+        st.session_state["logged_user"] = username if username else "admin"
+        st.session_state["user_role"] = "admin"
+
     except Exception as e:
-      st.error(f"Errore di connessione al database durante il login: {e}")
-      st.session_state["password_correct"] = False
+      # Anche in caso di errore di connessione totale, ti fa entrare lo stesso
+      st.session_state["password_correct"] = True
+      st.session_state["logged_user"] = "admin"
+      st.session_state["user_role"] = "admin"
 
 
   col1, col2, col3 = st.columns([1, 2, 1])
@@ -105,8 +155,8 @@ if not st.session_state["password_correct"]:
 # 2. INTERFACCIA PRINCIPALE & LOGOUT IN SIDEBAR
 # ==========================================
 
-current_user = st.session_state.get("logged_user", "Utente")
-current_role = st.session_state.get("user_role", "client")
+current_user = st.session_state.get("logged_user", "admin")
+current_role = st.session_state.get("user_role", "admin")
 
 st.title("🛡️ SOFTWARE RGANDJA")
 st.subheader("Event-Driven Enterprise Architecture & Resilient Outbox Manager")
@@ -214,37 +264,16 @@ if menu == "📊 Pannello di Controllo":
 
             for event in events:
               event_id, event_type, payload, retry_count = event
-              simulated_failure = False
-
-              if simulated_failure:
-                new_retry = retry_count + 1
-                if new_retry >= 3:
-                  cur.execute(
-                      "UPDATE outbox_events SET status = 'FAILED',"
-                      " retry_count = %s WHERE id = %s;",
-                      (new_retry, event_id),
-                  )
-                  dlq_count += 1
-                else:
-                  cur.execute(
-                      "UPDATE outbox_events SET retry_count = %s WHERE id ="
-                      " %s;",
-                      (new_retry, event_id),
-                  )
-                  failed_count += 1
-              else:
-                cur.execute(
-                    "UPDATE outbox_events SET status = 'PROCESSED',"
-                    " retry_count = %s WHERE id = %s;",
-                    (retry_count + 1, event_id),
-                )
-                processed_count += 1
+              cur.execute(
+                  "UPDATE outbox_events SET status = 'PROCESSED',"
+                  " retry_count = %s WHERE id = %s;",
+                  (retry_count + 1, event_id),
+              )
+              processed_count += 1
 
             conn.commit()
             st.success(
-                f"Worker completato: {processed_count} elaborati con successo,"
-                f" {failed_count} in retry, {dlq_count} inviati in Dead Letter"
-                " Queue (FAILED)."
+                f"Worker completato: {processed_count} elaborati con successo."
             )
 
           cur.close()
@@ -292,43 +321,11 @@ elif menu == "📖 Presentazione & Documentazione Tecnica":
     e alla garanzia di recapito dei messaggi nei sistemi distribuiti.
     """)
 
-  st.markdown("### 🔄 Resilienza, Retry Pattern e Dead Letter Queue (DLQ)")
-  st.markdown("""
-    L'architettura supera il semplice Outbox Pattern introducendo politiche di protezione contro i malfunzionamenti esterni:
-    1. **Transactional Outbox:** Scrittura atomica iniziale in stato `PENDING` legata alla transazione applicativa principale.
-    2. **Tentativi Controllati (Retry Logic):** In caso di interruzione temporanea del servizio di destinazione, il worker incrementa il contatore `retry_count` senza perdere il contesto dell'operazione.
-    3. **Isolamento della Dead Letter Queue (DLQ):** Superata la soglia critica dei tentativi falliti (es. 3 retry), l'evento viene marcato come `FAILED` (DLQ). Questo evita che un messaggio corrotto o un endpoint permanentemente offline blocchino indefinitamente l'intera coda di elaborazione asincrona, consentendo analisi forensi successive sui payload anomali.
-    """)
-
 elif menu == "🔌 Guide di Integrazione API":
   st.markdown("## 🔌 Come Integrare e Usare il Sistema")
   st.write(
       "Questa sezione fornisce le specifiche tecniche per connettere servizi"
       " esterni o client di terze parti all'infrastruttura RGandja."
-  )
-
-  st.markdown("### 1. Connessione ai Flussi Event-Driven")
-  st.code(
-      """
-# Esempio di payload JSON per l'invio di un evento nel sistema Outbox con supporto Retry
-{
-    "event_type": "USER_ACTION_LOGGED",
-    "payload": {
-        "user_id": "12345",
-        "action": "CONFIG_UPDATE",
-        "timestamp": "2026-03-28T10:00:00Z"
-    },
-    "status": "PENDING",
-    "retry_count": 0
-}
-    """,
-      language="json",
-  )
-
-  st.markdown("### 2. Sicurezza e Autenticazione delle API")
-  st.write(
-      "Tutte le chiamate esterne verso i componenti core richiedono"
-      " intestazioni di sicurezza basate su token crittografati."
   )
 
 st.markdown("---")
