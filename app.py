@@ -13,6 +13,11 @@ st.set_page_config(
 )
 
 # ==========================================
+# CONNESSIONE AL DATABASE NEON
+# ==========================================
+db_url = st.secrets["postgres"]["url"]
+
+# ==========================================
 # 1. SISTEMA DI SICUREZZA E AUTENTICAZIONE
 # ==========================================
 def check_password():
@@ -79,10 +84,58 @@ if menu == "📊 Pannello di Controllo":
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🚀 Inizializza Tabelle Outbox", use_container_width=True):
-            st.success("Comando di inizializzazione inviato con successo al motore di sistema.")
+            try:
+                import psycopg2
+                # Connessione al database usando l'URL salvato nei segreti
+                conn = psycopg2.connect(db_url)
+                cur = conn.cursor()
+
+                # Creazione della tabella outbox di esempio
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS outbox_events (
+                        id SERIAL PRIMARY KEY,
+                        event_type VARCHAR(255) NOT NULL,
+                        payload JSONB NOT NULL,
+                        status VARCHAR(50) DEFAULT 'PENDING',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                conn.commit()
+                cur.close()
+                conn.close()
+
+                st.success("Tabelle Outbox create e inizializzate con successo su Neon!")
+            except Exception as e:
+                st.error(f"Errore di connessione o inizializzazione: {e}")
+
     with col2:
         if st.button("⚙️ Esegui Worker Eventi Pendenti", use_container_width=True):
-            st.info("Worker avviato: elaborazione degli eventi in coda in corso...")
+            try:
+                import psycopg2
+                conn = psycopg2.connect(db_url)
+                cur = conn.cursor()
+
+                # Seleziona gli eventi pendenti
+                cur.execute("SELECT id, event_type, payload FROM outbox_events WHERE status = 'PENDING';")
+                events = cur.fetchall()
+
+                if not events:
+                    st.info("Nessun evento pendente trovato nella coda Outbox.")
+                else:
+                    count = 0
+                    for event in events:
+                        event_id, event_type, payload = event
+                        # Aggiorna lo stato dell'evento a 'PROCESSED'
+                        cur.execute("UPDATE outbox_events SET status = 'PROCESSED' WHERE id = %s;", (event_id,))
+                        count += 1
+
+                    conn.commit()
+                    st.success(f"Worker completato con successo: elaborati {count} eventi pendenti.")
+
+                cur.close()
+                conn.close()
+            except Exception as e:
+                st.error(f"Errore durante l'esecuzione del worker: {e}")
 
 elif menu == "📖 Presentazione & Documentazione Tecnica":
     st.markdown("## 📖 Informazioni sul Progetto")
